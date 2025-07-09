@@ -17,8 +17,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = config('SECRET_KEY', default='your-secret-key-here')
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-# Heroku automatically provides the domain, but we need to handle local development
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '.herokuapp.com']
+# Railway automatically provides the domain
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '.railway.app']
 
 # Application definition
 INSTALLED_APPS = [
@@ -38,7 +38,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',  # Add WhiteNoise
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -68,7 +68,7 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'inkwell.wsgi.application'
 
-# Database - Use PostgreSQL on Heroku, SQLite locally
+# Database - Railway provides PostgreSQL
 DATABASES = {
     'default': dj_database_url.config(
         default=f'sqlite:///{BASE_DIR}/db.sqlite3',
@@ -99,7 +99,7 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
+# Static files
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
@@ -110,12 +110,12 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS settings - Update for production
+# CORS settings for Railway
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # React development server
+    "http://localhost:3000",
     "http://127.0.0.1:3000",
-    # Add your frontend URL here when deployed
-    # "https://your-frontend-app.netlify.app",
+    # Add your Railway frontend URL when you deploy frontend
+    # "https://your-frontend.up.railway.app",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
