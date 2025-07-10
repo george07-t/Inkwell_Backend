@@ -98,10 +98,10 @@ class Article(models.Model):
     def clean(self):
         """
         Custom validation method called during model validation.
-        
+
         Validates:
         1. Title is not a placeholder
-        2. Publish date is in the future (if provided)
+        2. Publish date is in the future (if provided and status is draft)
         """
         # Validate title is not a placeholder
         placeholder_titles = ['untitled', 'new post', 'title', 'article']
@@ -109,13 +109,12 @@ class Article(models.Model):
             raise ValidationError({
                 'title': 'Title cannot be a placeholder like "Untitled" or "New Post".'
             })
-        
-        # Validate publish_date is in the future
-        if self.publish_date and self.publish_date <= timezone.now():
+
+        # Only require future publish_date if status is draft
+        if self.status == 'draft' and self.publish_date and self.publish_date <= timezone.now():
             raise ValidationError({
                 'publish_date': 'Publish date must be set to a future date.'
-            })
-    
+            })    
     def save(self, *args, **kwargs):
         """
         Override the save method to automatically generate slug from title.

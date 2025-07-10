@@ -111,6 +111,22 @@ class UserAuthViewSet(viewsets.ViewSet):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+from django.utils import timezone
+
+def publish_scheduled_articles():
+    """
+    Update all draft articles whose publish_date has passed to published.
+    """
+    now = timezone.now()
+    from .models import Article
+    articles = Article.objects.filter(
+        status='draft',
+        publish_date__isnull=False,
+        publish_date__lte=now
+    )
+    for article in articles:
+        article.status = 'published'
+        article.save()
 
 class ArticleViewSet(viewsets.ModelViewSet):
     """
@@ -134,6 +150,7 @@ class ArticleViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Filtered queryset with optimized database queries
         """
+        publish_scheduled_articles()
         # Use select_related to avoid N+1 queries when accessing author data
         base_queryset = Article.objects.select_related('author')
         
