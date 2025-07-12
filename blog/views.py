@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status, permissions
+from rest_framework.views import APIView
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
@@ -6,6 +7,8 @@ from rest_framework.pagination import PageNumberPagination
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db.models import Q
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
 
 from .models import Article
 from .serializers import (
@@ -23,40 +26,39 @@ from .permissions import IsAuthorOrReadOnly, IsOwnerOrCreateOnly, IsPublishedOrA
 class ArticlePagination(PageNumberPagination):
     """
     Custom pagination class for articles.
-    
-    Sets page size and allows clients to control page size within limits.
     """
     page_size = 10
     page_size_query_param = 'page_size'
     max_page_size = 50
 
 
+def publish_scheduled_articles():
+    """
+    Update all draft articles whose publish_date has passed to published.
+    """
+    now = timezone.now()
+    articles = Article.objects.filter(
+        status='draft',
+        publish_date__isnull=False,
+        publish_date__lte=now
+    )
+    for article in articles:
+        article.status = 'published'
+        article.save()
+
+
 class UserAuthViewSet(viewsets.ViewSet):
     """
     ViewSet for user authentication operations.
-    
-    Provides endpoints for user registration and login.
     """
-    # Set default permission to AllowAny for the entire ViewSet
     permission_classes = [permissions.AllowAny]
     
     @action(detail=False, methods=['post'])
     def register(self, request):
-        """
-        Register a new user.
-        
-        Args:
-            request: HTTP request containing user registration data
-            
-        Returns:
-            Response: User data and authentication token
-        """
         serializer = UserRegistrationSerializer(data=request.data)
         
         if serializer.is_valid():
             user = serializer.save()
-            
-            # Create authentication token for the user
             token, created = Token.objects.get_or_create(user=user)
             
             return Response({
@@ -73,26 +75,15 @@ class UserAuthViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['post'])
     def login(self, request):
-        """
-        Authenticate a user and return a token.
-        
-        Args:
-            request: HTTP request containing login credentials
-            
-        Returns:
-            Response: Authentication token and user data
-        """
         serializer = UserLoginSerializer(data=request.data)
         
         if serializer.is_valid():
             username = serializer.validated_data['username']
             password = serializer.validated_data['password']
             
-            # Authenticate user
             user = authenticate(username=username, password=password)
             
             if user:
-                # Get or create token
                 token, created = Token.objects.get_or_create(user=user)
                 
                 return Response({
@@ -111,163 +102,63 @@ class UserAuthViewSet(viewsets.ViewSet):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-from django.utils import timezone
 
-def publish_scheduled_articles():
+class PublicArticleListView(APIView):
     """
-    Update all draft articles whose publish_date has passed to published.
-    """
-    now = timezone.now()
-    from .models import Article
-    articles = Article.objects.filter(
-        status='draft',
-        publish_date__isnull=False,
-        publish_date__lte=now
-    )
-    for article in articles:
-        article.status = 'published'
-        article.save()
-
-class ArticleViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for article CRUD operations.
+    API view for listing all published articles (public access).
     
-    Provides endpoints for creating, reading, updating, and deleting articles.
-    Includes proper permissions and efficient database queries.
+    GET /articles/public_articles/
     """
-    
+    permission_classes = [permissions.AllowAny]
     pagination_class = ArticlePagination
-    permission_classes = [IsAuthorOrReadOnly]
     
-    def get_queryset(self):
+    def get(self, request):
         """
-        Return the appropriate queryset based on the action.
-        
-        - For list view: only published articles
-        - For detail view: published articles or user's own articles
-        - For other actions: all articles (permissions will handle access)
-        
-        Returns:
-            QuerySet: Filtered queryset with optimized database queries
+        Return a list of all published articles.
         """
         publish_scheduled_articles()
-        # Use select_related to avoid N+1 queries when accessing author data
-        base_queryset = Article.objects.select_related('author')
         
-        if self.action == 'list':
-            # For list view, only show published articles
-            return base_queryset.filter(status='published')
-        elif self.action == 'retrieve':
-            # For detail view, show published articles or user's own articles
-            if self.request.user.is_authenticated:
-                return base_queryset.filter(
-                    Q(status='published') | Q(author=self.request.user)
-                )
-            else:
-                return base_queryset.filter(status='published')
-        else:
-            # For other actions (create, update, delete), return all articles
-            # Permissions will handle access control
-            return base_queryset
-    
-    def get_serializer_class(self):
-        """
-        Return the appropriate serializer class based on the action.
-        
-        Returns:
-            Serializer: The serializer class to use
-        """
-        if self.action == 'list':
-            return ArticleListSerializer
-        elif self.action == 'retrieve':
-            return ArticleDetailSerializer
-        elif self.action == 'create':
-            return ArticleCreateSerializer
-        elif self.action in ['update', 'partial_update']:
-            return ArticleUpdateSerializer
-        elif self.action == 'my_articles':
-            return UserArticleSerializer
-        else:
-            return ArticleDetailSerializer
-    
-    def get_permissions(self):
-        """
-        Return the appropriate permission classes based on the action.
-        
-        Returns:
-            list: List of permission class instances
-        """
-        if self.action in ['list', 'retrieve']:
-            # For reading, use the published or author permission
-            permission_classes = [IsPublishedOrAuthor]
-        elif self.action == 'my_articles':
-            # For user's own articles, require ownership
-            permission_classes = [IsOwnerOrCreateOnly]
-        else:
-            # For create, update, delete operations
-            permission_classes = [IsAuthorOrReadOnly]
-        
-        return [permission() for permission in permission_classes]
-    
-    def perform_create(self, serializer):
-        """
-        Save the article with the current user as the author.
-        
-        Args:
-            serializer: The serializer instance
-        """
-        serializer.save(author=self.request.user)
-    
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
-    def my_articles(self, request):
-        """
-        Get all articles belonging to the authenticated user.
-        
-        Returns both draft and published articles of the current user.
-        
-        Args:
-            request: HTTP request
-            
-        Returns:
-            Response: Paginated list of user's articles
-        """
-        # Get all articles by the current user (both draft and published)
-        queryset = Article.objects.filter(author=request.user).select_related('author')
+        # Get all published articles
+        queryset = Article.objects.filter(status='published').select_related('author')
         
         # Apply pagination
-        page = self.paginate_queryset(queryset)
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request)
+        
         if page is not None:
-            serializer = UserArticleSerializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+            serializer = ArticleListSerializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
         
-        # If pagination is not configured, return all results
-        serializer = UserArticleSerializer(queryset, many=True)
+        serializer = ArticleListSerializer(queryset, many=True)
         return Response(serializer.data)
+
+
+class PublicArticleDetailView(APIView):
+    """
+    API view for retrieving a specific published article (public access).
     
-    def retrieve(self, request, *args, **kwargs):
+    GET /articles/public_articles/<pk>/
+    """
+    permission_classes = [permissions.AllowAny]
+    
+    def get(self, request, pk):
         """
-        Retrieve a single article.
-        
-        Override to handle slug-based lookup and proper permissions.
-        
-        Args:
-            request: HTTP request
-            
-        Returns:
-            Response: Article data or 404/403 error
+        Return a specific published article by pk or slug.
         """
+        publish_scheduled_articles()
+        
         try:
-            # Try to get the article by slug first, then by pk
-            lookup_value = kwargs.get('pk')
-            if lookup_value.isdigit():
-                article = self.get_queryset().get(pk=lookup_value)
+            # Try to get by pk first, then by slug
+            if pk.isdigit():
+                article = Article.objects.select_related('author').get(
+                    pk=pk, status='published'
+                )
             else:
-                article = self.get_queryset().get(slug=lookup_value)
+                article = Article.objects.select_related('author').get(
+                    slug=pk, status='published'
+                )
             
-            # Check object permissions
-            self.check_object_permissions(request, article)
-            
-            serializer = self.get_serializer(article)
+            serializer = ArticleDetailSerializer(article)
             return Response(serializer.data)
             
         except Article.DoesNotExist:
@@ -275,76 +166,216 @@ class ArticleViewSet(viewsets.ModelViewSet):
                 {'error': 'Article not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+class UserArticleListView(APIView):
+    """
+    API view for listing user's articles with permission checking.
     
-    def list(self, request, *args, **kwargs):
+    GET /articles/user_articles/<user_id>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = ArticlePagination
+    
+    def get(self, request, user_id):
         """
-        List all published articles.
-        
-        Override to add custom filtering and ensure only published articles are shown.
-        
-        Args:
-            request: HTTP request
-            
-        Returns:
-            Response: Paginated list of published articles
+        Return articles for a specific user.
+        If it's the current user, return all articles (draft + published).
+        If it's another user, return only published articles.
         """
-        queryset = self.filter_queryset(self.get_queryset())
+        publish_scheduled_articles()
+        
+        # Get the target user
+        target_user = get_object_or_404(User, id=user_id)
+        
+        # Check if requesting user is the same as target user
+        if request.user.id == int(user_id):
+            # Own articles - show all (draft + published)
+            queryset = Article.objects.filter(author=target_user).select_related('author')
+            serializer_class = UserArticleSerializer
+        else:
+            # Other user's articles - show only published
+            queryset = Article.objects.filter(
+                author=target_user, status='published'
+            ).select_related('author')
+            serializer_class = ArticleListSerializer
         
         # Apply pagination
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(queryset, request)
         
-        # If pagination is not configured, return all results
-        serializer = self.get_serializer(queryset, many=True)
+        if page is not None:
+            serializer = serializer_class(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+        
+        serializer = serializer_class(queryset, many=True)
+        return Response(serializer.data)
+
+
+class UserArticleDetailView(APIView):
+    """
+    API view for retrieving, updating, and deleting user's articles.
+    
+    GET /articles/user_articles/<user_id>/<pk>/
+    PUT /articles/user_articles/<user_id>/<pk>/
+    PATCH /articles/user_articles/<user_id>/<pk>/
+    DELETE /articles/user_articles/<user_id>/<pk>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_article(self, user_id, pk, request_user):
+        """
+        Get article with proper permission checking.
+        """
+        target_user = get_object_or_404(User, id=user_id)
+        
+        try:
+            if pk.isdigit():
+                article = Article.objects.select_related('author').get(
+                    pk=pk, author=target_user
+                )
+            else:
+                article = Article.objects.select_related('author').get(
+                    slug=pk, author=target_user
+                )
+            
+            # Permission check
+            if request_user.id == int(user_id):
+                # Own article - can see all
+                return article
+            else:
+                # Other user's article - only if published
+                if article.status == 'published':
+                    return article
+                else:
+                    return None
+        except Article.DoesNotExist:
+            return None
+    
+    def get(self, request, user_id, pk):
+        """
+        Retrieve a specific article.
+        """
+        publish_scheduled_articles()
+        
+        article = self.get_article(user_id, pk, request.user)
+        
+        if not article:
+            return Response(
+                {'error': 'Article not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Use appropriate serializer based on ownership
+        if request.user.id == int(user_id):
+            serializer = ArticleDetailSerializer(article)
+        else:
+            serializer = ArticleDetailSerializer(article)
+        
         return Response(serializer.data)
     
-    def update(self, request, *args, **kwargs):
+    def put(self, request, user_id, pk):
         """
-        Update an article.
-        
-        Override to ensure proper permission checking and validation.
-        
-        Args:
-            request: HTTP request
-            
-        Returns:
-            Response: Updated article data or error
+        Fully update an article (only owner can update).
         """
-        partial = kwargs.pop('partial', False)
-        instance = self.get_object()
+        # Only allow owner to update
+        if request.user.id != int(user_id):
+            return Response(
+                {'error': 'You can only edit your own articles'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         
-        # Check if user has permission to update this article
-        self.check_object_permissions(request, instance)
+        article = self.get_article(user_id, pk, request.user)
         
-        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if not article:
+            return Response(
+                {'error': 'Article not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = ArticleUpdateSerializer(
+            article, data=request.data, context={'request': request}
+        )
         
         if serializer.is_valid():
-            self.perform_update(serializer)
+            serializer.save()
             return Response(serializer.data)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
-    def destroy(self, request, *args, **kwargs):
+    def patch(self, request, user_id, pk):
         """
-        Delete an article.
-        
-        Override to ensure proper permission checking.
-        
-        Args:
-            request: HTTP request
-            
-        Returns:
-            Response: Success message or error
+        Partially update an article (only owner can update).
         """
-        instance = self.get_object()
+        # Only allow owner to update
+        if request.user.id != int(user_id):
+            return Response(
+                {'error': 'You can only edit your own articles'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         
-        # Check if user has permission to delete this article
-        self.check_object_permissions(request, instance)
+        article = self.get_article(user_id, pk, request.user)
         
-        self.perform_destroy(instance)
+        if not article:
+            return Response(
+                {'error': 'Article not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        serializer = ArticleUpdateSerializer(
+            article, data=request.data, partial=True, context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def delete(self, request, user_id, pk):
+        """
+        Delete an article (only owner can delete).
+        """
+        # Only allow owner to delete
+        if request.user.id != int(user_id):
+            return Response(
+                {'error': 'You can only delete your own articles'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        article = self.get_article(user_id, pk, request.user)
+        
+        if not article:
+            return Response(
+                {'error': 'Article not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        article.delete()
         return Response(
             {'message': 'Article deleted successfully'},
             status=status.HTTP_204_NO_CONTENT
         )
+
+class CreateArticleView(APIView):
+    """
+    API view for creating new articles.
+    
+    POST /articles/create/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        """
+        Create a new article.
+        """
+        serializer = ArticleCreateSerializer(data=request.data, context={'request': request})
+        
+        if serializer.is_valid():
+            article = serializer.save(author=request.user)
+            return Response(
+                ArticleDetailSerializer(article).data,
+                status=status.HTTP_201_CREATED
+            )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
